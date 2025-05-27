@@ -49,31 +49,28 @@ func main() {
 			 cada uma enviando os dados para canais individuais. Aplicar timeouts e preparar os
 			 dados para a próxima etapa (pipeline/parsing).
 	*/
-	endpoints := []string{GET_USERS, GET_POSTS, GET_COMMENTS, GET_ALBUMS, GET_PHOTOS, GET_TODOS}
 	var wg sync.WaitGroup
-	ch := make(chan []byte, len(endpoints))
+
+	endpoints := []string{GET_USERS, GET_POSTS, GET_COMMENTS, GET_ALBUMS, GET_PHOTOS, GET_TODOS}
+	rawDataCh := make(chan []byte, len(endpoints))
 	errCh := make(chan error, len(endpoints))
 
 	for _, e := range endpoints {
 		wg.Add(1)
-		go FetchData(e, ch, errCh, &wg)
+		go FetchData(e, rawDataCh, errCh, &wg)
 	}
 
 	go func() {
 		wg.Wait()
-		close(ch)
+		close(rawDataCh)
 		close(errCh)
 	}()
 
-	for data := range ch {
+	for data := range rawDataCh {
 		fmt.Printf("Received %d bytes\n", len(data))
 	}
 
 	for err := range errCh {
 		fmt.Printf("Error: %v\n", err)
-	}
-
-	for data := range ch {
-		fmt.Println("Data preview:", string(data[:10]))
 	}
 }

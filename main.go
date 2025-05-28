@@ -19,6 +19,8 @@ const (
 	GET_PHOTOS   = "https://jsonplaceholder.typicode.com/photos"
 	GET_TODOS    = "https://jsonplaceholder.typicode.com/todos"
 
+	parseWorkers = 6
+
 	requestTimeout = 2 * time.Second
 )
 
@@ -158,6 +160,7 @@ func fetchData(endpoint string, ch chan<- RawResponse, errCh chan<- PipelineErro
 func main() {
 	var wg sync.WaitGroup
 	var parseWg sync.WaitGroup
+	var errLoggerWg sync.WaitGroup
 
 	endpoints := []string{GET_USERS, GET_POSTS, GET_COMMENTS, GET_ALBUMS, GET_PHOTOS, GET_TODOS}
 
@@ -166,8 +169,9 @@ func main() {
 	errCh := make(chan PipelineError, len(endpoints)*2)
 
 	// consuming errors
+	errLoggerWg.Add(1)
 	go func() {
-
+		defer errLoggerWg.Done()
 		var fetchErr, parseErr int
 		for err := range errCh {
 			log.Printf("%s ERROR in %s: %v (at %v)",
@@ -176,6 +180,7 @@ func main() {
 				err.Error,
 				err.Timestamp.Format(time.RFC3339),
 			)
+
 			switch err.Stage {
 			case "fetch":
 				fetchErr++
@@ -183,6 +188,7 @@ func main() {
 				parseErr++
 			}
 		}
+
 		fmt.Printf("Total fetch errors: %d\n", fetchErr)
 		fmt.Printf("Total parse errors: %d\n", parseErr)
 	}()
@@ -197,27 +203,29 @@ func main() {
 		close(rawCh)
 	}()
 
-	parseWg.Add(1)
-	go func() {
-		defer parseWg.Done()
-		for raw := range rawCh {
-			switch raw.Endpoint {
-			case GET_USERS:
-				parseData[User](raw, parsedCh, errCh, "parse")
-			case GET_POSTS:
-				parseData[Post](raw, parsedCh, errCh, "parse")
-			case GET_COMMENTS:
-				parseData[Comment](raw, parsedCh, errCh, "parse")
-			case GET_ALBUMS:
-				parseData[Album](raw, parsedCh, errCh, "parse")
-			case GET_PHOTOS:
-				parseData[Photo](raw, parsedCh, errCh, "parse")
-			case GET_TODOS:
-				parseData[Todo](raw, parsedCh, errCh, "parse")
-			}
-		}
-	}()
 	// parse stage
+	parseWg.Add(parseWorkers)
+	for i := 0; i < parseWorkers; i++ {
+		go func() {
+			defer parseWg.Done()
+			for raw := range rawCh {
+				switch raw.Endpoint {
+				case GET_USERS:
+					parseData[User](raw, parsedCh, errCh, "parse")
+				case GET_POSTS:
+					parseData[Post](raw, parsedCh, errCh, "parse")
+				case GET_COMMENTS:
+					parseData[Comment](raw, parsedCh, errCh, "parse")
+				case GET_ALBUMS:
+					parseData[Album](raw, parsedCh, errCh, "parse")
+				case GET_PHOTOS:
+					parseData[Photo](raw, parsedCh, errCh, "parse")
+				case GET_TODOS:
+					parseData[Todo](raw, parsedCh, errCh, "parse")
+				}
+			}
+		}()
+	}
 	go func() {
 		parseWg.Wait()
 		close(parsedCh)
@@ -255,4 +263,6 @@ func main() {
 			fmt.Printf("Unknown type for endpoint %s\n", parsed.Endpoint)
 		}
 	}
+
+	errLoggerWg.Wait()
 }

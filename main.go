@@ -22,6 +22,15 @@ const (
 	requestTimeout = 2 * time.Second
 )
 
+var typeMap = map[string]string{
+	GET_USERS:    "user",
+	GET_POSTS:    "post",
+	GET_COMMENTS: "comment",
+	GET_ALBUMS:   "album",
+	GET_PHOTOS:   "photo",
+	GET_TODOS:    "todo",
+}
+
 type User struct {
 	ID    int    `json:"id"`
 	Name  string `json:"name"`
@@ -103,22 +112,11 @@ func parseData[T any](rawData RawResponse, parsedCh chan<- ParsedData, errCh cha
 }
 
 func getType(endpoint string) string {
-	switch endpoint {
-	case GET_USERS:
-		return "user"
-	case GET_POSTS:
-		return "post"
-	case GET_COMMENTS:
-		return "comment"
-	case GET_ALBUMS:
-		return "album"
-	case GET_PHOTOS:
-		return "photo"
-	case GET_TODOS:
-		return "todo"
-	default:
-		return "unknown"
+	if t, ok := typeMap[endpoint]; ok {
+		return t
 	}
+
+	return "unknown"
 }
 
 func fetchData(endpoint string, ch chan<- RawResponse, errCh chan<- PipelineError, wg *sync.WaitGroup, stage string) {
@@ -166,6 +164,28 @@ func main() {
 	rawCh := make(chan RawResponse, len(endpoints))
 	parsedCh := make(chan ParsedData, len(endpoints))
 	errCh := make(chan PipelineError, len(endpoints)*2)
+
+	// consuming errors
+	go func() {
+
+		var fetchErr, parseErr int
+		for err := range errCh {
+			log.Printf("%s ERROR in %s: %v (at %v)",
+				strings.ToUpper(err.Stage),
+				err.Endpoint,
+				err.Error,
+				err.Timestamp.Format(time.RFC3339),
+			)
+			switch err.Stage {
+			case "fetch":
+				fetchErr++
+			case "parse":
+				parseErr++
+			}
+		}
+		fmt.Printf("Total fetch errors: %d\n", fetchErr)
+		fmt.Printf("Total parse errors: %d\n", parseErr)
+	}()
 
 	// fetch stage
 	wg.Add(len(endpoints))
@@ -234,14 +254,5 @@ func main() {
 		default:
 			fmt.Printf("Unknown type for endpoint %s\n", parsed.Endpoint)
 		}
-	}
-
-	// consuming errors
-	for err := range errCh {
-		log.Printf("%s ERROR in %s: %v (at %v)",
-			strings.ToUpper(err.Stage),
-			err.Endpoint,
-			err.Error,
-			err.Timestamp.Format(time.RFC3339))
 	}
 }

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -62,22 +64,35 @@ type Todo struct {
 	UserID    int    `json:"userId"`
 }
 
+type RawResponse struct {
+	Endpoint string
+	Data     []byte
+}
+
 type ParsedData struct {
 	Data     any
 	Endpoint string
 	Type     string
 }
 
-type RawResponse struct {
-	Endpoint string
-	Data     []byte
+type PipelineError struct {
+	Stage     string
+	Endpoint  string
+	Error     error
+	Timestamp time.Time
 }
 
-func parseData[T any](rawData RawResponse, parsedCh chan<- ParsedData, errCh chan<- error) {
+func parseData[T any](rawData RawResponse, parsedCh chan<- ParsedData, errCh chan<- PipelineError, stage string) {
 	var data []T
 
 	if err := json.Unmarshal(rawData.Data, &data); err != nil {
-		errCh <- fmt.Errorf("failed to parse posts: %w", err)
+		errCh <- PipelineError{
+			Stage:     stage,
+			Endpoint:  rawData.Endpoint,
+			Error:     err,
+			Timestamp: time.Now(),
+		}
+		return
 	}
 
 	parsedCh <- ParsedData{
@@ -106,7 +121,7 @@ func getType(endpoint string) string {
 	}
 }
 
-func fetchData(endpoint string, ch chan<- RawResponse, errCh chan<- error, wg *sync.WaitGroup) {
+func fetchData(endpoint string, ch chan<- RawResponse, errCh chan<- PipelineError, wg *sync.WaitGroup, stage string) {
 	defer wg.Done()
 
 	client := http.Client{
@@ -115,14 +130,24 @@ func fetchData(endpoint string, ch chan<- RawResponse, errCh chan<- error, wg *s
 
 	res, err := client.Get(endpoint)
 	if err != nil {
-		errCh <- fmt.Errorf("failed to fetch %s: %w", endpoint, err)
+		errCh <- PipelineError{
+			Stage:     stage,
+			Endpoint:  endpoint,
+			Error:     err,
+			Timestamp: time.Now(),
+		}
 		return
 	}
 	defer res.Body.Close()
 
 	data, err := io.ReadAll(res.Body)
 	if err != nil {
-		errCh <- fmt.Errorf("failed to read response from %s: %w", endpoint, err)
+		errCh <- PipelineError{
+			Stage:     stage,
+			Endpoint:  endpoint,
+			Error:     err,
+			Timestamp: time.Now(),
+		}
 		return
 	}
 
@@ -140,12 +165,12 @@ func main() {
 
 	rawCh := make(chan RawResponse, len(endpoints))
 	parsedCh := make(chan ParsedData, len(endpoints))
-	errCh := make(chan error, len(endpoints))
+	errCh := make(chan PipelineError, len(endpoints)*2)
 
 	// fetch stage
 	wg.Add(len(endpoints))
 	for _, e := range endpoints {
-		go fetchData(e, rawCh, errCh, &wg)
+		go fetchData(e, rawCh, errCh, &wg, "fetch")
 	}
 	go func() {
 		wg.Wait()
@@ -158,17 +183,17 @@ func main() {
 		for raw := range rawCh {
 			switch raw.Endpoint {
 			case GET_USERS:
-				parseData[User](raw, parsedCh, errCh)
+				parseData[User](raw, parsedCh, errCh, "parse")
 			case GET_POSTS:
-				parseData[Post](raw, parsedCh, errCh)
+				parseData[Post](raw, parsedCh, errCh, "parse")
 			case GET_COMMENTS:
-				parseData[Comment](raw, parsedCh, errCh)
+				parseData[Comment](raw, parsedCh, errCh, "parse")
 			case GET_ALBUMS:
-				parseData[Album](raw, parsedCh, errCh)
+				parseData[Album](raw, parsedCh, errCh, "parse")
 			case GET_PHOTOS:
-				parseData[Photo](raw, parsedCh, errCh)
+				parseData[Photo](raw, parsedCh, errCh, "parse")
 			case GET_TODOS:
-				parseData[Todo](raw, parsedCh, errCh)
+				parseData[Todo](raw, parsedCh, errCh, "parse")
 			}
 		}
 	}()
@@ -213,6 +238,10 @@ func main() {
 
 	// consuming errors
 	for err := range errCh {
-		fmt.Printf("ERROR: %v\n", err)
+		log.Printf("%s ERROR in %s: %v (at %v)",
+			strings.ToUpper(err.Stage),
+			err.Endpoint,
+			err.Error,
+			err.Timestamp.Format(time.RFC3339))
 	}
 }

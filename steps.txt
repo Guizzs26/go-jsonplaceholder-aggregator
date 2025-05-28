@@ -1,31 +1,49 @@
 🛠️ Technical Checklist – Step 1:
-🔄 1. Create the goroutines (fan-out)
-[x] Define a function fetchData(endpoint string, ch chan<- []byte, errCh chan<- error, wg *sync.WaitGroup)
 
+🔄 1. Create the goroutines (fan-out)
+
+[x] Define a function fetchData(endpoint string, ch chan<- []byte, errCh chan<- error, wg *sync.WaitGroup)
 [x] Each goroutine will use this function to make a GET request to an endpoint.
 
-🧵 2. Use sync.WaitGroup to synchronize the goroutines
-[x] Increment with wg.Add(1) before starting each goroutine.
+--- /// ---
 
+🧵 2. Use sync.WaitGroup to synchronize the goroutines
+
+[x] Increment with wg.Add(1) before starting each goroutine.
 [x] Inside the goroutine, at the end, call defer wg.Done().
 
+--- /// ---
+
 📡 3. Define channels for communication
+
 [x] A chan []byte channel for the raw data (one per endpoint or just one with tags if you want to multiplex).
-
 [x] A chan error channel to catch fetch errors.
-
 [x] Use buffered channels to avoid write blocking.
 
+--- /// ---
+
 ⏱️ 4. Implement timeout on each request
+
 [x] Create a http.Client{ Timeout: 2 * time.Second }
 
-Alternatively (or additionally), implement select with time.After(...) for more explicit timeout control.
+[] Alternatively (or additionally), implement select with time.After(...) for more explicit timeout control.
+
+--- /// ---
+
 
 📦 5. Send the raw data (JSON) to the channel
+
 [x] When you get the response, read it with io.ReadAll(resp.Body) and send the []byte to the channel.
 
+--- /// ---
+
 🧹 6. Close the channels after WaitGroup.Wait()
+
 [x] After wg.Wait(), close the data and error channel(s) with close(dataCh) and close(errCh) in a goroutine.
 
+
+--- /// ---
+
 🪵 7. (Optional) Make simple logging of the request with total time per endpoint
+
 [x] Use time.Now() and time.Since(...) to measure the time of each fetch and display it on the terminal.

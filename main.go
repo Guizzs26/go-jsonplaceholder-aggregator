@@ -63,14 +63,28 @@ type Todo struct {
 }
 
 type ParsedData struct {
-	Endpoint string
 	Data     any
+	Endpoint string
 	Type     string
 }
 
 type RawResponse struct {
 	Endpoint string
 	Data     []byte
+}
+
+func parseData[T any](rawData RawResponse, parsedCh chan<- ParsedData, errCh chan<- error) {
+	var data []T
+
+	if err := json.Unmarshal(rawData.Data, &data); err != nil {
+		errCh <- fmt.Errorf("failed to parse posts: %w", err)
+	}
+
+	parsedCh <- ParsedData{
+		Data:     data,
+		Endpoint: rawData.Endpoint,
+		Type:     getType(rawData.Endpoint),
+	}
 }
 
 func getType(endpoint string) string {
@@ -93,7 +107,6 @@ func getType(endpoint string) string {
 }
 
 func fetchData(endpoint string, ch chan<- RawResponse, errCh chan<- error, wg *sync.WaitGroup) {
-	start := time.Now()
 	defer wg.Done()
 
 	client := http.Client{
@@ -117,8 +130,6 @@ func fetchData(endpoint string, ch chan<- RawResponse, errCh chan<- error, wg *s
 		Endpoint: endpoint,
 		Data:     data,
 	}
-
-	fmt.Printf("[%s] took %v\n", endpoint, time.Since(start))
 }
 
 func main() {
@@ -147,52 +158,17 @@ func main() {
 		for raw := range rawCh {
 			switch raw.Endpoint {
 			case GET_USERS:
-				var users []User
-				if err := json.Unmarshal(raw.Data, &users); err == nil {
-					parsedCh <- ParsedData{Endpoint: raw.Endpoint, Data: users, Type: getType(raw.Endpoint)}
-				} else {
-					errCh <- fmt.Errorf("failed to parse users: %w", err)
-				}
-
+				parseData[User](raw, parsedCh, errCh)
 			case GET_POSTS:
-				var posts []Post
-				if err := json.Unmarshal(raw.Data, &posts); err == nil {
-					parsedCh <- ParsedData{Endpoint: raw.Endpoint, Data: posts, Type: getType(raw.Endpoint)}
-				} else {
-					errCh <- fmt.Errorf("failed to parse posts: %w", err)
-				}
-
+				parseData[Post](raw, parsedCh, errCh)
 			case GET_COMMENTS:
-				var comments []Comment
-				if err := json.Unmarshal(raw.Data, &comments); err == nil {
-					parsedCh <- ParsedData{Endpoint: raw.Endpoint, Data: comments, Type: getType(raw.Endpoint)}
-				} else {
-					errCh <- fmt.Errorf("failed to parse comments: %w", err)
-				}
-
+				parseData[Comment](raw, parsedCh, errCh)
 			case GET_ALBUMS:
-				var albums []Album
-				if err := json.Unmarshal(raw.Data, &albums); err == nil {
-					parsedCh <- ParsedData{Endpoint: raw.Endpoint, Data: albums, Type: getType(raw.Endpoint)}
-				} else {
-					errCh <- fmt.Errorf("failed to parse albums: %w", err)
-				}
-
+				parseData[Album](raw, parsedCh, errCh)
 			case GET_PHOTOS:
-				var photos []Photo
-				if err := json.Unmarshal(raw.Data, &photos); err == nil {
-					parsedCh <- ParsedData{Endpoint: raw.Endpoint, Data: photos, Type: getType(raw.Endpoint)}
-				} else {
-					errCh <- fmt.Errorf("failed to parse photos: %w", err)
-				}
-
+				parseData[Photo](raw, parsedCh, errCh)
 			case GET_TODOS:
-				var todos []Todo
-				if err := json.Unmarshal(raw.Data, &todos); err == nil {
-					parsedCh <- ParsedData{Endpoint: raw.Endpoint, Data: todos, Type: getType(raw.Endpoint)}
-				} else {
-					errCh <- fmt.Errorf("failed to parse todos: %w", err)
-				}
+				parseData[Todo](raw, parsedCh, errCh)
 			}
 		}
 	}()

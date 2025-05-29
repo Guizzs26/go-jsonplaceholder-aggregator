@@ -24,6 +24,15 @@ const (
 	requestTimeout = 2 * time.Second
 )
 
+var (
+	usersMap    = make(map[int]User)
+	postsMap    = make(map[int][]Post)
+	albumsMap   = make(map[int][]Album)
+	photosMap   = make(map[int][]Photo)
+	commentsMap = make(map[int][]Comment)
+	todosMap    = make(map[int][]Todo)
+)
+
 var typeMap = map[string]string{
 	GET_USERS:    "user",
 	GET_POSTS:    "post",
@@ -31,6 +40,17 @@ var typeMap = map[string]string{
 	GET_ALBUMS:   "album",
 	GET_PHOTOS:   "photo",
 	GET_TODOS:    "todo",
+}
+
+type EnrichedUser struct {
+	ID           int
+	Name         string
+	Email        string
+	PostCount    int
+	AlbumCount   int
+	TodoCount    int
+	CommentCount int
+	PhotoCount   int
 }
 
 type User struct {
@@ -61,11 +81,11 @@ type Album struct {
 }
 
 type Photo struct {
-	ID            int    `json:"id"`
-	Title         string `json:"title"`
-	Url           string `json:"url"`
-	ThumbanailUrl string `json:"thumbnailUrl"`
-	AlbumID       int    `json:"albumId"`
+	ID           int    `json:"id"`
+	Title        string `json:"title"`
+	Url          string `json:"url"`
+	ThumbnailUrl string `json:"thumbnailUrl"`
+	AlbumID      int    `json:"albumId"`
 }
 
 type Todo struct {
@@ -160,18 +180,19 @@ func fetchData(endpoint string, ch chan<- RawResponse, errCh chan<- PipelineErro
 func main() {
 	var wg sync.WaitGroup
 	var parseWg sync.WaitGroup
-	var errLoggerWg sync.WaitGroup
+	var errWg sync.WaitGroup
 
 	endpoints := []string{GET_USERS, GET_POSTS, GET_COMMENTS, GET_ALBUMS, GET_PHOTOS, GET_TODOS}
 
 	rawCh := make(chan RawResponse, len(endpoints))
 	parsedCh := make(chan ParsedData, len(endpoints))
+	enrichedCh := make(chan EnrichedUser, len(usersMap))
 	errCh := make(chan PipelineError, len(endpoints)*2)
 
 	// consuming errors
-	errLoggerWg.Add(1)
+	errWg.Add(1)
 	go func() {
-		defer errLoggerWg.Done()
+		defer errWg.Done()
 		var fetchErr, parseErr int
 		for err := range errCh {
 			log.Printf("%s ERROR in %s: %v (at %v)",
@@ -236,33 +257,54 @@ func main() {
 	for parsed := range parsedCh {
 		switch v := parsed.Data.(type) {
 		case []User:
-			for _, user := range v {
-				fmt.Printf("[USER]: %s (ID: %d)\n", user.Name, user.ID)
+			for _, u := range v {
+				usersMap[u.ID] = u
 			}
 		case []Post:
-			for _, post := range v {
-				fmt.Printf("[POST]: %q (UserID: %d)\n", post.Title, post.UserID)
+			for _, p := range v {
+				postsMap[p.UserID] = append(postsMap[p.UserID], p)
 			}
 		case []Comment:
-			for _, comment := range v {
-				fmt.Printf("[COMMENT]: %q (PostID: %d)\n", comment.Body, comment.PostID)
+			for _, c := range v {
+				commentsMap[c.PostID] = append(commentsMap[c.PostID], c)
 			}
 		case []Album:
-			for _, album := range v {
-				fmt.Printf("[ALBUM]: %q (UserID: %d)\n", album.Title, album.UserID)
+			for _, a := range v {
+				albumsMap[a.UserID] = append(albumsMap[a.UserID], a)
 			}
 		case []Photo:
-			for _, photo := range v {
-				fmt.Printf("[PHOTO]: %q (AlbumID: %d)\n", photo.Title, photo.AlbumID)
+			for _, p := range v {
+				photosMap[p.AlbumID] = append(photosMap[p.AlbumID], p)
 			}
 		case []Todo:
-			for _, todo := range v {
-				fmt.Printf("[TODO]: %q (UserID: %d, Done: %v)\n", todo.Title, todo.UserID, todo.Completed)
+			for _, t := range v {
+				todosMap[t.UserID] = append(todosMap[t.UserID], t)
 			}
 		default:
 			fmt.Printf("Unknown type for endpoint %s\n", parsed.Endpoint)
 		}
 	}
 
-	errLoggerWg.Wait()
+	for _, user := range usersMap {
+		go func(u User) {
+			enriched := EnrichedUser{
+				ID:         u.ID,
+				Name:       u.Name,
+				Email:      u.Email,
+				PostCount:  len(postsMap[u.ID]),
+				AlbumCount: len(albumsMap[u.ID]),
+				TodoCount:  len(todosMap[u.ID]),
+			}
+
+			enrichedCh <- enriched
+		}(user)
+	}
+
+	fmt.Println("===== Aggregated Data =====")
+	for enriched := range enrichedCh {
+		fmt.Printf("User: %-20s | Posts: %d | Albums: %d | Todos: %d\n",
+			enriched.Name, enriched.PostCount, enriched.AlbumCount, enriched.TodoCount)
+	}
+
+	errWg.Wait()
 }

@@ -47,3 +47,7 @@
 🪵 7. (Optional) Make simple logging of the request with total time per endpoint
 
 [x] Use time.Now() and time.Since(...) to measure the time of each fetch and display it on the terminal.
+
+
+----------------- // ----------------- 
+

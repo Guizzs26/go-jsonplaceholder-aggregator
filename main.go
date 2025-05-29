@@ -24,15 +24,6 @@ const (
 	requestTimeout = 2 * time.Second
 )
 
-var (
-	usersMap    = make(map[int]User)
-	postsMap    = make(map[int][]Post)
-	albumsMap   = make(map[int][]Album)
-	photosMap   = make(map[int][]Photo)
-	commentsMap = make(map[int][]Comment)
-	todosMap    = make(map[int][]Todo)
-)
-
 var typeMap = map[string]string{
 	GET_USERS:    "user",
 	GET_POSTS:    "post",
@@ -113,6 +104,111 @@ type PipelineError struct {
 	Timestamp time.Time
 }
 
+type AggregatedData struct {
+	Users        map[int]User
+	Posts        map[int][]Post
+	Albums       map[int][]Album
+	Todos        map[int][]Todo
+	Comments     map[int][]Comment
+	Photos       map[int][]Photo
+	PostsByUser  map[int][]Post
+	AlbumsByUser map[int][]Album
+	mu           sync.RWMutex
+}
+
+func NewAggregatedData() *AggregatedData {
+	return &AggregatedData{
+		Users:        make(map[int]User),
+		Posts:        make(map[int][]Post),
+		Albums:       make(map[int][]Album),
+		Todos:        make(map[int][]Todo),
+		Comments:     make(map[int][]Comment),
+		Photos:       make(map[int][]Photo),
+		PostsByUser:  make(map[int][]Post),
+		AlbumsByUser: make(map[int][]Album),
+	}
+}
+
+func (ad *AggregatedData) AddUsers(users []User) {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	for _, u := range users {
+		ad.Users[u.ID] = u
+	}
+}
+
+func (ad *AggregatedData) AddPosts(posts []Post) {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	for _, p := range posts {
+		ad.Posts[p.UserID] = append(ad.Posts[p.UserID], p)
+		ad.PostsByUser[p.UserID] = append(ad.PostsByUser[p.UserID], p)
+	}
+}
+
+func (ad *AggregatedData) AddAlbums(albums []Album) {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	for _, a := range albums {
+		ad.Albums[a.UserID] = append(ad.Albums[a.UserID], a)
+		ad.AlbumsByUser[a.UserID] = append(ad.AlbumsByUser[a.UserID], a)
+	}
+}
+
+func (ad *AggregatedData) AddTodos(todos []Todo) {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	for _, t := range todos {
+		ad.Todos[t.UserID] = append(ad.Todos[t.UserID], t)
+	}
+}
+
+func (ad *AggregatedData) AddComments(comments []Comment) {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	for _, c := range comments {
+		ad.Comments[c.PostID] = append(ad.Comments[c.PostID], c)
+	}
+}
+
+func (ad *AggregatedData) AddPhotos(photos []Photo) {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	for _, p := range photos {
+		ad.Photos[p.AlbumID] = append(ad.Photos[p.AlbumID], p)
+	}
+}
+
+func (ad *AggregatedData) GetEnrichedUsers() []EnrichedUser {
+	ad.mu.RLock()
+	defer ad.mu.RUnlock()
+
+	var enriched []EnrichedUser
+	for _, user := range ad.Users {
+		commentCount := 0
+		for _, post := range ad.PostsByUser[user.ID] {
+			commentCount += len(ad.Comments[post.ID])
+		}
+
+		photoCount := 0
+		for _, album := range ad.AlbumsByUser[user.ID] {
+			photoCount += len(ad.Photos[album.ID])
+		}
+
+		enriched = append(enriched, EnrichedUser{
+			ID:           user.ID,
+			Name:         user.Name,
+			Email:        user.Email,
+			PostCount:    len(ad.Posts[user.ID]),
+			AlbumCount:   len(ad.Albums[user.ID]),
+			TodoCount:    len(ad.Todos[user.ID]),
+			CommentCount: commentCount,
+			PhotoCount:   photoCount,
+		})
+	}
+	return enriched
+}
+
 func parseData[T any](rawData RawResponse, parsedCh chan<- ParsedData, errCh chan<- PipelineError, stage string) {
 	var data []T
 
@@ -137,7 +233,6 @@ func getType(endpoint string) string {
 	if t, ok := typeMap[endpoint]; ok {
 		return t
 	}
-
 	return "unknown"
 }
 
@@ -183,10 +278,10 @@ func main() {
 	var errWg sync.WaitGroup
 
 	endpoints := []string{GET_USERS, GET_POSTS, GET_COMMENTS, GET_ALBUMS, GET_PHOTOS, GET_TODOS}
+	aggregated := NewAggregatedData()
 
 	rawCh := make(chan RawResponse, len(endpoints))
 	parsedCh := make(chan ParsedData, len(endpoints))
-	enrichedCh := make(chan EnrichedUser, len(usersMap))
 	errCh := make(chan PipelineError, len(endpoints)*2)
 
 	// consuming errors
@@ -226,7 +321,7 @@ func main() {
 
 	// parse stage
 	parseWg.Add(parseWorkers)
-	for i := 0; i < parseWorkers; i++ {
+	for range parseWorkers {
 		go func() {
 			defer parseWg.Done()
 			for raw := range rawCh {
@@ -257,53 +352,28 @@ func main() {
 	for parsed := range parsedCh {
 		switch v := parsed.Data.(type) {
 		case []User:
-			for _, u := range v {
-				usersMap[u.ID] = u
-			}
+			aggregated.AddUsers(v)
 		case []Post:
-			for _, p := range v {
-				postsMap[p.UserID] = append(postsMap[p.UserID], p)
-			}
+			aggregated.AddPosts(v)
 		case []Comment:
-			for _, c := range v {
-				commentsMap[c.PostID] = append(commentsMap[c.PostID], c)
-			}
+			aggregated.AddComments(v)
 		case []Album:
-			for _, a := range v {
-				albumsMap[a.UserID] = append(albumsMap[a.UserID], a)
-			}
+			aggregated.AddAlbums(v)
 		case []Photo:
-			for _, p := range v {
-				photosMap[p.AlbumID] = append(photosMap[p.AlbumID], p)
-			}
+			aggregated.AddPhotos(v)
 		case []Todo:
-			for _, t := range v {
-				todosMap[t.UserID] = append(todosMap[t.UserID], t)
-			}
+			aggregated.AddTodos(v)
 		default:
 			fmt.Printf("Unknown type for endpoint %s\n", parsed.Endpoint)
 		}
 	}
 
-	for _, user := range usersMap {
-		go func(u User) {
-			enriched := EnrichedUser{
-				ID:         u.ID,
-				Name:       u.Name,
-				Email:      u.Email,
-				PostCount:  len(postsMap[u.ID]),
-				AlbumCount: len(albumsMap[u.ID]),
-				TodoCount:  len(todosMap[u.ID]),
-			}
-
-			enrichedCh <- enriched
-		}(user)
-	}
+	enrichedUser := aggregated.GetEnrichedUsers()
 
 	fmt.Println("===== Aggregated Data =====")
-	for enriched := range enrichedCh {
-		fmt.Printf("User: %-20s | Posts: %d | Albums: %d | Todos: %d\n",
-			enriched.Name, enriched.PostCount, enriched.AlbumCount, enriched.TodoCount)
+	for _, enriched := range enrichedUser {
+		fmt.Printf("User: %-20s | Posts: %d | Comments: %d | Albums: %d | Photos: %d | Todos: %d\n",
+			enriched.Name, enriched.PostCount, enriched.CommentCount, enriched.AlbumCount, enriched.PhotoCount, enriched.TodoCount)
 	}
 
 	errWg.Wait()
